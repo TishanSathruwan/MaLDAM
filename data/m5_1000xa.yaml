@@ -1,6 +1,7 @@
 path: datasets/malariadtst/Images/
 train: 'HCM/train/1000x'
 val: 'LCM/test/1000x'
+test: 'LCM/test/1000x'
 
 # class names
 names: 
