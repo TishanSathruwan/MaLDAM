@@ -125,6 +125,7 @@ def run(
         plots=True,
         callbacks=Callbacks(),
         compute_loss=None,
+        save_class_stats=False,
 ):
     # Initialize/load model and set device
     training = model is not None
@@ -283,11 +284,57 @@ def run(
     LOGGER.info(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
     if nt.sum() == 0:
         LOGGER.warning(f'WARNING ⚠️ no labels found in {task} set, can not compute metrics without labels')
-
+ 
     # Print results per class
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             LOGGER.info(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+
+    # Save printed results
+    if save_class_stats:
+        txt_path = Path(save_dir) / "evaluation_results.txt"
+        header = ('%22s' + '%11s' * 6) % (
+            'Class', 'Images', 'Instances', 'P', 'R', 'mAP50', 'mAP50-95'
+        )
+        with open(txt_path, "w") as f:
+
+            # header
+            f.write(header + "\n")
+
+            # --------------------
+            # GLOBAL RESULTS (all)
+            # --------------------
+            pf = '%22s' + '%11i' * 2 + '%11.3g' * 4
+
+            f.write(pf % (
+                'all',
+                seen,
+                int(nt.sum()),
+                mp,
+                mr,
+                map50,
+                map
+            ) + "\n")
+
+            # warning if no labels
+            if nt.sum() == 0:
+                f.write(f"\nWARNING ⚠️ no labels found in {task} set\n")
+
+            # --------------------
+            # PER CLASS RESULTS
+            # --------------------
+            if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
+
+                for i, c in enumerate(ap_class):
+                    f.write(pf % (
+                        names[c],
+                        seen,
+                        int(nt[c]),
+                        p[i],
+                        r[i],
+                        ap50[i],
+                        ap[i]
+                    ) + "\n")
 
     # Print speeds
     t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image

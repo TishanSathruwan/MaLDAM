@@ -18,6 +18,7 @@ Tutorial:   https://docs.ultralytics.com/yolov5/tutorials/train_custom_data
 import argparse
 import math
 import os
+import json
 import random
 import subprocess
 import sys
@@ -48,6 +49,7 @@ from utils.autobatch import check_train_batch_size
 from utils.callbacks import Callbacks
 from utils.dataloaders_contrastive import create_dataloader
 from utils.dataloaders import create_dataloader as create_val_dataloader
+from utils.feature_matching import neirest_neighbores_on_l2
 
 from utils.downloads import attempt_download, is_url
 from utils.general import (LOGGER, TQDM_BAR_FORMAT, check_amp, check_dataset, check_file, check_git_info,
@@ -84,6 +86,20 @@ class ProjectionHead(nn.Module):
     def forward(self, x):
         x = self.avg_pool(x)
         x = x.view(x.size(0), -1)
+        return self.projection_head(x)
+    
+class LocalProjectionHead(nn.Module):
+    def __init__(self, in_features = 768, hidden_features = 256, out_features = 128):
+        super(LocalProjectionHead, self).__init__()
+        self.projection_head = nn.Sequential(
+            nn.Linear(in_features, hidden_features),
+            nn.ReLU(),
+            nn.Linear(hidden_features, hidden_features),
+            nn.ReLU(),
+            nn.Linear(hidden_features, out_features)
+        )
+
+    def forward(self, x):
         return self.projection_head(x)
 
 
@@ -131,6 +147,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     with torch_distributed_zero_first(LOCAL_RANK):
         data_dict = data_dict or check_dataset(data)  # check if None
     train_path, val_path = data_dict['train'], data_dict['val']
+    bench_paths = data_dict['benchmark']
 
 
     nc = 1 if single_cls else int(data_dict['nc'])  # number of classes
@@ -143,7 +160,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     if pretrained:
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location='cpu')  # load checkpoint to CPU to avoid CUDA memory leak
+        ckpt = torch.load(weights, map_location='cpu', weights_only=False)  # load checkpoint to CPU to avoid CUDA memory leak
         model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
@@ -154,6 +171,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     projection_head = ProjectionHead().to(device) #Projection head is only for yolov5m only, run model/yolo.py and print the features output accordingly to put here
+    local_projection_head = LocalProjectionHead().to(device)
 
     amp = check_amp(model)  # check AMP
     # amp1 = check_amp(projection_head)  # check AMP
@@ -180,7 +198,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     nbs = 64  # nominal batch size
     accumulate = max(round(nbs / batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= batch_size * accumulate / nbs  # scale weight_decay
-    optimizer = smart_optimizer2(model, projection_head, opt.optimizer, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
+    optimizer = smart_optimizer2(model, projection_head, local_projection_head, opt.optimizer, hyp['lr0'], hyp['momentum'], hyp['weight_decay'])
 
     # Scheduler
     if opt.cos_lr:
@@ -223,6 +241,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                               single_cls,
                                               hyp=hyp,
                                               augment=True,
+                                              dg_augment=True,
                                               cache=None if opt.cache == 'val' else opt.cache,
                                               rect=opt.rect,
                                               rank=LOCAL_RANK,
@@ -250,6 +269,19 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                                        workers=workers * 2,
                                        pad=0.5,
                                        prefix=colorstr('val: '))[0]
+
+        bench_loaders = {bm: create_val_dataloader(path,
+                                       imgsz,
+                                       batch_size // WORLD_SIZE * 2,
+                                       gs,
+                                       single_cls,
+                                       hyp=hyp,
+                                       cache=None if noval else opt.cache,
+                                       rect=True,
+                                       rank=-1,
+                                       workers=workers * 2,
+                                       pad=0.5,
+                                       prefix=colorstr(f'bench-{bm}: '))[0] for bm,path in bench_paths.items()}
 
         if not resume:
             if not opt.noautoanchor:
@@ -308,6 +340,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
         mloss = torch.zeros(3, device=device)  # mean losses
         mdac_loss = 0.0
+        mdalc_loss = 0.0
         DAC_LEARNING_RATE_FAC = 1
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
@@ -356,15 +389,25 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 
                 _, pred_hcm = model(imgs_hcm, features_output = True)
                 # print(pred_hcm.shape)
+                pred_hcm_local = local_projection_head(pred_hcm.flatten(start_dim=2).permute(0, 2, 1))
                 pred_hcm = projection_head(pred_hcm)
 
                 _, pred_lcm = model(imgs_lcm, features_output = True)
+                pred_lcm_local = local_projection_head(pred_lcm.flatten(start_dim=2).permute(0, 2, 1))
                 pred_lcm = projection_head(pred_lcm)
+
+                m1,m2,_,_  = neirest_neighbores_on_l2(pred_hcm_local,pred_lcm_local,20)
+                m1 = m1.flatten(end_dim=1)
+                m2 = m2.flatten(end_dim=1)
 
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 dac_criterion = NTXentLoss(device = 'cuda', batch_size=pred_lcm.shape[0], temperature=0.1, use_cosine_similarity = True)
+                dalc_criterion = NTXentLoss(device = 'cuda', batch_size=m1.shape[0], temperature=0.1, use_cosine_similarity = True)
 
                 dac_loss = dac_criterion(pred_hcm, pred_lcm)*DAC_LEARNING_RATE_FAC
+                dalc_loss = dalc_criterion(m1, m2)*DAC_LEARNING_RATE_FAC
+
+                dac_loss = 0.5 * dac_loss + 0.5 * dalc_loss
 
 
                 if RANK != -1:
@@ -375,7 +418,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             # Backward
             scaler.scale(loss).backward()
             scaler.scale(dac_loss).backward()
-
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
             if ni - last_opt_step >= accumulate:
@@ -491,7 +533,12 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
             if f.exists():
                 strip_optimizer(f)  # strip optimizers
                 if f is best:
-                    LOGGER.info(f'\nValidating {f}...')
+                    LOGGER.info(f'\Benchmarking {f}...')
+                    bench_dict = {}
+                    # M5 Testing
+                    LOGGER.info(f'\nM5 Testset Benchmarking...')
+                    m5_save_dir = Path(save_dir) / "M5"
+                    os.makedirs(m5_save_dir,exist_ok=True)
                     results, _, _ = validate.run(
                         data_dict,
                         batch_size=batch_size // WORLD_SIZE ,# removed *2 here
@@ -500,12 +547,35 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                         iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
                         single_cls=single_cls,
                         dataloader=val_loader,
-                        save_dir=save_dir,
+                        save_dir=m5_save_dir,
                         save_json=is_coco,
                         verbose=True,
                         plots=plots,
                         callbacks=callbacks,
-                        compute_loss=compute_loss)  # val best model with plots
+                        compute_loss=compute_loss,
+                        save_class_stats=True)  # val best model with plots
+                    bench_dict['M5'] = results
+                    # Other Benchmark datasets
+                    for bench,bench_dl in bench_loaders.items():
+                        LOGGER.info(f'\n{bench} Benchmarking...')
+                        bench_save_dir = Path(save_dir) / bench
+                        os.makedirs(bench_save_dir,exist_ok=True)
+                        bench_result, _, _ = validate.run(
+                            data_dict,
+                            batch_size=batch_size // WORLD_SIZE ,# removed *2 here
+                            imgsz=imgsz,
+                            model=attempt_load(f, device).half(),
+                            iou_thres=0.65 if is_coco else 0.60,  # best pycocotools at iou 0.65
+                            single_cls=single_cls,
+                            dataloader=bench_dl,
+                            save_dir=bench_save_dir,
+                            save_json=is_coco,
+                            verbose=True,
+                            plots=plots,
+                            callbacks=callbacks,
+                            compute_loss=compute_loss,
+                            save_class_stats=True) 
+                        bench_dict[bench] = bench_result
                     if is_coco:
                         callbacks.run('on_fit_epoch_end', list(mloss) + list(results) + lr, epoch, best_fitness, fi)
 

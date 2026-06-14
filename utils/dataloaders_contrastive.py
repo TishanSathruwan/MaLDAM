@@ -35,7 +35,7 @@ sys.path.insert(0, path_to_add)
 
 
 
-from utils.augmentations import (Albumentations, augment_hsv, classify_albumentations, classify_transforms, copy_paste,
+from utils.augmentations import (Albumentations, MalariaDGAugment, augment_hsv, classify_albumentations, classify_transforms, copy_paste,
                                  letterbox, mixup, random_perspective)
 from utils.general import (DATASETS_DIR, LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, check_dataset, check_requirements,
                            check_yaml, clean_str, cv2, is_colab, is_kaggle, segments2boxes, unzip_file, xyn2xy,
@@ -114,6 +114,7 @@ def create_dataloader(path,
                       single_cls=False,
                       hyp=None,
                       augment=False,
+                      dg_augment=False,
                       cache=False,
                       pad=0.0,
                       rect=False,
@@ -133,6 +134,7 @@ def create_dataloader(path,
             imgsz,
             batch_size,
             augment=augment,  # augmentation
+            dg_augment=dg_augment, #dg_augmentations
             hyp=hyp,  # hyperparameters
             rect=rect,  # rectangular batches
             cache_images=cache,
@@ -448,6 +450,7 @@ class LoadImagesAndLabels(Dataset):
                  img_size=640,
                  batch_size=16,
                  augment=False,
+                 dg_augment=False,
                  hyp=None,
                  rect=False,
                  image_weights=False,
@@ -459,6 +462,7 @@ class LoadImagesAndLabels(Dataset):
                  prefix=''):
         self.img_size = img_size
         self.augment = augment
+        self.dg_augment = dg_augment
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
@@ -468,6 +472,7 @@ class LoadImagesAndLabels(Dataset):
         self.path = path
         self.path_lcm = path.replace('/HCM/', '/LCM/')
         self.albumentations = Albumentations(size=img_size) if augment else None
+        self.dg_augmentations = MalariaDGAugment()
 
         try:
             f = []  # image files
@@ -783,7 +788,8 @@ class LoadImagesAndLabels(Dataset):
         img_hcm, ratio_hcm, pad_hcm = letterbox(img_hcm, shape, auto=False, scaleup=False)
         img_lcm, ratio_lcm, pad_lcm = letterbox(img_lcm, shape, auto=False, scaleup=False)
 
-
+        if self.dg_augment:
+            img_hcm = self.dg_augmentations(img_hcm)
 
         if mosaic:
             # Load mosaic
@@ -797,6 +803,8 @@ class LoadImagesAndLabels(Dataset):
         else:
             # Load image
             img, (h0, w0), (h, w) = self.load_image(index)
+            if self.dg_augment:
+                img = self.dg_augmentations(img)
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
@@ -862,6 +870,16 @@ class LoadImagesAndLabels(Dataset):
 
         return (torch.from_numpy(img), torch.from_numpy(img_hcm), torch.from_numpy(img_lcm)), labels_out, (self.im_files[index], self.im_files_lcm[index]), shapes
 
+    def apply_clahe(self, img):
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        l2 = clahe.apply(l)
+
+        lab2 = cv2.merge((l2, a, b))
+        return cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+    
     def load_image(self, i):
         # Loads 1 image from dataset index 'i', returns (im, original hw, resized hw)
         im, f, fn = self.ims[i], self.im_files[i], self.npy_files[i],
@@ -869,8 +887,9 @@ class LoadImagesAndLabels(Dataset):
             if fn.exists():  # load npy
                 im = np.load(fn)
             else:  # read image
-                im = cv2.imread(f)  # BGR
+                im = cv2.imread(f) # BGR
                 assert im is not None, f'Image Not Found {f}'
+            # im = self.apply_clahe(im)
             h0, w0 = im.shape[:2]  # orig hw
             r = self.img_size / max(h0, w0)  # ratio
             if r != 1:  # if sizes are not equal
@@ -878,7 +897,7 @@ class LoadImagesAndLabels(Dataset):
                 im = cv2.resize(im, (math.ceil(w0 * r), math.ceil(h0 * r)), interpolation=interp)
             return im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
         return self.ims[i], self.im_hw0[i], self.im_hw[i]  # im, hw_original, hw_resized
-    
+
     def load_image_lcm(self, i):
         # Loads 1 image from dataset index 'i', returns (im, original hw, resized hw)
         im, f, fn = self.ims_lcm[i], self.im_files_lcm[i], self.npy_files_lcm[i],
@@ -888,6 +907,7 @@ class LoadImagesAndLabels(Dataset):
             else:  # read image
                 im = cv2.imread(f)  # BGR
                 assert im is not None, f'Image Not Found {f}'
+            # im = self.apply_clahe(im)
             h0, w0 = im.shape[:2]  # orig hw
             r = self.img_size / max(h0, w0)  # ratio
             if r != 1:  # if sizes are not equal
