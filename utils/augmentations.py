@@ -9,6 +9,7 @@ import random
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 
@@ -17,6 +18,10 @@ from utils.metrics import bbox_ioa
 
 IMAGENET_MEAN = 0.485, 0.456, 0.406  # RGB mean
 IMAGENET_STD = 0.229, 0.224, 0.225  # RGB standard deviation
+
+
+
+
 
 
 class Albumentations:
@@ -395,3 +400,153 @@ class ToTensor:
         im = im.half() if self.half else im.float()  # uint8 to fp16/32
         im /= 255.0  # 0-255 to 0.0-1.0
         return im
+
+class MalariaDGAugment:
+    def __init__(
+        self,
+        p_blur=0.5,
+        p_noise=0.5,
+        p_bc=0.8,
+        p_color=0.5,
+        p_stain=0.7,
+        p_res=0.5,
+        p_jpeg=0.5,
+    ):
+        self.p_blur = p_blur
+        self.p_noise = p_noise
+        self.p_bc = p_bc
+        self.p_color = p_color
+        self.p_stain = p_stain
+        self.p_res = p_res
+        self.p_jpeg = p_jpeg
+
+    # -------------------------
+    # 1. Gaussian blur
+    # -------------------------
+    def gaussian_blur(self, img):
+        if random.random() < self.p_blur:
+            # sometimes very strong blur
+            if random.random() < 0.3:
+                k = random.choice([11, 13, 15])
+                sigma = random.uniform(3.0, 8.0)
+            else:
+                k = random.choice([5, 7, 9])
+                sigma = random.uniform(1.0, 3.0)
+
+            return cv2.GaussianBlur(img, (k, k), sigmaX=sigma)
+
+        return img
+
+    # -------------------------
+    # 2. Gaussian noise
+    # -------------------------
+    def gaussian_noise(self, img):
+        if random.random() < self.p_noise:
+            std = random.uniform(5, 20)
+            noise = np.random.randn(*img.shape) * std
+            img = img.astype(np.float32) + noise
+            return np.clip(img, 0, 255).astype(np.uint8)
+        return img
+
+    # -------------------------
+    # 3. Brightness / Contrast
+    # -------------------------
+    def brightness_contrast(self, img):
+        if random.random() < self.p_bc:
+            img = img.astype(np.float32)
+
+            b = random.uniform(0.7, 1.3)
+            c = random.uniform(0.7, 1.3)
+
+            img = img * b
+            mean = np.mean(img, axis=(0, 1), keepdims=True)
+            img = (img - mean) * c + mean
+
+            return np.clip(img, 0, 255).astype(np.uint8)
+
+        return img
+
+    # -------------------------
+    # 4. Color jitter (HSV)
+    # -------------------------
+    def color_jitter(self, img):
+        if random.random() < self.p_color:
+            hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV).astype(np.float32)
+
+            hsv[..., 0] += random.uniform(-10, 10)
+            hsv[..., 1] *= random.uniform(0.8, 1.2)
+            hsv[..., 2] *= random.uniform(0.8, 1.2)
+
+            hsv[..., 0] = np.clip(hsv[..., 0], 0, 179)
+            hsv[..., 1] = np.clip(hsv[..., 1], 0, 255)
+            hsv[..., 2] = np.clip(hsv[..., 2], 0, 255)
+
+            img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+        return img
+
+    # -------------------------
+    # 5. Stain perturbation
+    # -------------------------
+    def stain_perturbation(self, img):
+        if random.random() < self.p_stain:
+            img = img.astype(np.float32)
+
+            gains = np.random.uniform(0.8, 1.2, size=(1, 1, 3))
+            img = img * gains
+
+            return np.clip(img, 0, 255).astype(np.uint8)
+
+        return img
+
+    # -------------------------
+    # 6. Resolution degradation
+    # -------------------------
+    def resolution_degradation(self, img):
+        if random.random() < self.p_res:
+            h, w = img.shape[:2]
+            scale = random.uniform(0.3, 0.8)
+
+            nh, nw = int(h * scale), int(w * scale)
+
+            down = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            up = cv2.resize(down, (w, h), interpolation=cv2.INTER_LINEAR)
+
+            return up
+
+        return img
+
+    # # -------------------------
+    # # 7. JPEG compression
+    # # -------------------------
+    # def jpeg_compression(self, img):
+    #     if random.random() < self.p_jpeg:
+    #         quality = random.randint(30, 100)
+
+    #         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    #         _, encimg = cv2.imencode(".jpg", img, encode_param)
+    #         decimg = cv2.imdecode(encimg, cv2.IMREAD_COLOR)
+
+    #         return decimg
+
+    #     return img
+
+    # -------------------------
+    # Full pipeline
+    # -------------------------
+    def __call__(self, img):
+        """
+        img: numpy array (H, W, C), uint8 RGB
+        """
+
+        img = self.gaussian_blur(img)
+        img = self.gaussian_noise(img)
+
+        img = self.brightness_contrast(img)
+        img = self.color_jitter(img)
+
+        img = self.stain_perturbation(img)
+
+        img = self.resolution_degradation(img)
+
+        return img

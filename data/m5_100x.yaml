@@ -1,6 +1,12 @@
-path: datasets/malariadtst/Images/
+path: M5_dataset/Images/
 train: 'HCM/train/100x'
 val: 'LCM/test/100x'
+test: 'LCM/test/100x'
+
+# benchmarking
+benchmark:
+  BBBC041: 'BBBC041_6_class/test'
+  IML: 'iml-malaria'
 
 # class names
 names: 

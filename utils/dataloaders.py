@@ -427,13 +427,20 @@ class LoadStreams:
     def __len__(self):
         return len(self.sources)  # 1E12 frames = 32 streams at 30 FPS for 30 years
 
-
 def img2label_paths(img_paths):
     # Define label paths as a function of image paths
-    sa, sb = f'{os.sep}Images{os.sep}', f'{os.sep}Labels{os.sep}'  # /images/, /labels/ substrings
-    return [sb.join(x.rsplit(sa, 1)).rsplit('.', 1)[0] + '.txt' for x in img_paths]
+    label_paths = []
 
+    for x in img_paths:
+        x = str(x)
 
+        # replace both cases efficiently
+        x = x.replace("/Images/", "/Labels/").replace("\\Images\\", "\\Labels\\")
+        x = x.replace("/images/", "/labels/").replace("\\images\\", "\\labels\\")
+
+        label_paths.append(str(Path(x).with_suffix(".txt")))
+
+    return label_paths
 class LoadImagesAndLabels(Dataset):
     # YOLOv5 train_loader/val_loader, loads images and labels for training and validation
     cache_version = 0.6  # dataset labels *.cache version
