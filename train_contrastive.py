@@ -64,6 +64,8 @@ from utils.torch_utils import (EarlyStopping, ModelEMA, de_parallel, select_devi
                                smart_resume, torch_distributed_zero_first)
 from utils.ntxent_original import NTXentLoss
 
+from utils.vicregl import VICRegLLoss, VICRegLHead
+
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
@@ -132,7 +134,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         data_dict = data_dict or check_dataset(data)  # check if None
     train_path, val_path = data_dict['train'], data_dict['val']
 
-
     nc = 1 if single_cls else int(data_dict['nc'])  # number of classes
     names = {0: 'item'} if single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
     is_coco = isinstance(val_path, str) and val_path.endswith('coco/val2017.txt')  # COCO dataset
@@ -143,7 +144,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     if pretrained:
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location='cpu')  # load checkpoint to CPU to avoid CUDA memory leak
+        ckpt = torch.load(weights, map_location='cpu', weights_only=False)  # load checkpoint to CPU to avoid CUDA memory leak
         model = Model(cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
@@ -153,7 +154,8 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     else:
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
-    projection_head = ProjectionHead().to(device) #Projection head is only for yolov5m only, run model/yolo.py and print the features output accordingly to put here
+    # projection_head = ProjectionHead().to(device) #Projection head is only for yolov5m only, run model/yolo.py and print the features output accordingly to put here
+    projection_head = VICRegLHead().to(device)
 
     amp = check_amp(model)  # check AMP
     # amp1 = check_amp(projection_head)  # check AMP
@@ -286,6 +288,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model)  # init loss class
+    vicregl_criterion = VICRegLLoss()
     callbacks.run('on_train_start')
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n'
@@ -350,21 +353,28 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                     imgs_lcm = nn.functional.interpolate(imgs_lcm, size=ns, mode='bilinear', align_corners=False)
 
             # Forward
-            with torch.cuda.amp.autocast(amp):
+            with torch.amp.autocast(device_type="cuda", enabled=amp):
                 # print(f'Images shape {imgs.shape}, HCM_IMGS shape {imgs_hcm.shape}, LCM_IMGS shape {imgs_lcm.shape}')                
                 pred = model(imgs)  # forward
                 
                 _, pred_hcm = model(imgs_hcm, features_output = True)
-                # print(pred_hcm.shape)
-                pred_hcm = projection_head(pred_hcm)
+                # print(pred_hcm.shape) [4, 768, 20, 20]
+                # pred_hcm = projection_head(pred_hcm)
 
                 _, pred_lcm = model(imgs_lcm, features_output = True)
-                pred_lcm = projection_head(pred_lcm)
+                # pred_lcm = projection_head(pred_lcm)
+
+                # vicregL based features
+                vicregl_outs = projection_head([pred_hcm, pred_lcm])
 
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                dac_criterion = NTXentLoss(device = 'cuda', batch_size=pred_lcm.shape[0], temperature=0.1, use_cosine_similarity = True)
+                # dac_criterion = NTXentLoss(device = 'cuda', batch_size=pred_lcm.shape[0], temperature=0.1, use_cosine_similarity = True)
 
-                dac_loss = dac_criterion(pred_hcm, pred_lcm)*DAC_LEARNING_RATE_FAC
+                # dac_loss = dac_criterion(vicregl_outs["embedding"][0],vicregl_outs["embedding"][1])*DAC_LEARNING_RATE_FAC
+
+                # vicregL based loss
+                vicregl_loss, _ = vicregl_criterion(vicregl_outs)
+                vicregl_loss = vicregl_loss * 0.05 
 
 
                 if RANK != -1:
@@ -374,7 +384,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             # Backward
             scaler.scale(loss).backward()
-            scaler.scale(dac_loss).backward()
+            scaler.scale(vicregl_loss).backward()
 
 
             # Optimize - https://pytorch.org/docs/master/notes/amp_examples.html
@@ -410,7 +420,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
             if RANK in {-1, 0}:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
-                mdac_loss = (mdac_loss * i + dac_loss.detach().item()) / (i + 1)  # update mean contrastive loss
+                mdac_loss = (mdac_loss * i + vicregl_loss.detach().item()) / (i + 1)  # update mean contrastive loss
                 mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'  # (GB)
                 pbar.set_description(('%11s' * 3 + '%11.4g' * 6) %
                                     (f'{epoch}/{epochs - 1}', mem, f'DAC {mdac_loss:.4g}', *mloss, mdac_loss, targets.shape[0], imgs.shape[-1]))
@@ -584,7 +594,7 @@ def main(opt, callbacks=Callbacks()):
             opt.data = check_file(opt_data)  # avoid HUB resume auth timeout
     else:
         opt.data, opt.cfg, opt.hyp, opt.weights, opt.project = \
-            check_file(opt.data), check_yaml(opt.hyp), str(opt.weights), str(opt.project)  # checks
+            check_file(opt.data), check_yaml(opt.cfg), check_yaml(opt.hyp), str(opt.weights), str(opt.project)  # checks
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
         if opt.evolve:
             if opt.project == str(ROOT / 'runs/train'):  # if default project name, rename to runs/evolve
