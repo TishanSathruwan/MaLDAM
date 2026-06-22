@@ -35,7 +35,7 @@ sys.path.insert(0, path_to_add)
 
 
 
-from utils.augmentations import (Albumentations, MalariaDGAugment, augment_hsv, classify_albumentations, classify_transforms, copy_paste,
+from utils.augmentations import (Albumentations, MalariaDGAugment, FourierDGAugment, augment_hsv, classify_albumentations, classify_transforms, copy_paste,
                                  letterbox, mixup, random_perspective)
 from utils.general import (DATASETS_DIR, LOGGER, NUM_THREADS, TQDM_BAR_FORMAT, check_dataset, check_requirements,
                            check_yaml, clean_str, cv2, is_colab, is_kaggle, segments2boxes, unzip_file, xyn2xy,
@@ -473,6 +473,7 @@ class LoadImagesAndLabels(Dataset):
         self.path_lcm = path.replace('/HCM/', '/LCM/')
         self.albumentations = Albumentations(size=img_size) if augment else None
         self.dg_augmentations = MalariaDGAugment()
+        self.fourier_dg_augmentations = FourierDGAugment(image_size=img_size, jitter=0.4)
 
         try:
             f = []  # image files
@@ -791,6 +792,9 @@ class LoadImagesAndLabels(Dataset):
         if self.dg_augment:
             img_hcm = self.dg_augmentations(img_hcm)
 
+        if self.fourier_dg_augmentations:
+            img_hcm, img_lcm = self.fourier_dg_augmentations(img_hcm, img_lcm)
+
         if mosaic:
             # Load mosaic
             img, labels = self.load_mosaic(index)
@@ -866,7 +870,6 @@ class LoadImagesAndLabels(Dataset):
 
         img_lcm = img_lcm.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img_lcm = np.ascontiguousarray(img_lcm)
-
 
         return (torch.from_numpy(img), torch.from_numpy(img_hcm), torch.from_numpy(img_lcm)), labels_out, (self.im_files[index], self.im_files_lcm[index]), shapes
 

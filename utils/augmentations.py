@@ -550,3 +550,80 @@ class MalariaDGAugment:
         img = self.resolution_degradation(img)
 
         return img
+
+class FourierDGAugment:
+    """ Fourier Domain Generalization Augmentation """
+    def __init__(self, image_size=640, jitter=0.1, alpha=1.0):
+        self.image_size = image_size
+        self.jitter = jitter
+        self.alpha = alpha
+        self.pre_transform=self._get_pre_transform()
+        self.post_transform=self._get_post_transform()
+
+    def _get_pre_transform(self):
+        """ Get pre-processing transformations for the input image """
+        img_transform = [T.ToPILImage(), T.Resize((self.image_size, self.image_size))]
+        if self.jitter > 0:
+            img_transform.append(T.ColorJitter(brightness=self.jitter,
+                                                        contrast=self.jitter,
+                                                        saturation=self.jitter,
+                                                        hue=min(0.5, self.jitter)))
+        img_transform += [T.RandomHorizontalFlip(), lambda x: np.asarray(x)]
+        img_transform = T.Compose(img_transform)
+        return img_transform
+
+    def colorful_spectrum_mix(self, img1, img2, ratio=1.0):
+        """Input image size: ndarray of [H, W, C]"""
+        lam = np.random.uniform(0, self.alpha)
+
+        assert img1.shape == img2.shape
+        h, w, c = img1.shape
+        h_crop = int(h * math.sqrt(ratio))
+        w_crop = int(w * math.sqrt(ratio))
+        h_start = h // 2 - h_crop // 2
+        w_start = w // 2 - w_crop // 2
+
+        img1_fft = np.fft.fft2(img1, axes=(0, 1))
+        img2_fft = np.fft.fft2(img2, axes=(0, 1))
+        img1_abs, img1_pha = np.abs(img1_fft), np.angle(img1_fft)
+        img2_abs, img2_pha = np.abs(img2_fft), np.angle(img2_fft)
+
+        img1_abs = np.fft.fftshift(img1_abs, axes=(0, 1))
+        img2_abs = np.fft.fftshift(img2_abs, axes=(0, 1))
+
+        img1_abs_ = np.copy(img1_abs)
+        img2_abs_ = np.copy(img2_abs)
+        img1_abs[h_start:h_start + h_crop, w_start:w_start + w_crop] = \
+            lam * img2_abs_[h_start:h_start + h_crop, w_start:w_start + w_crop] + (1 - lam) * img1_abs_[
+                                                                                            h_start:h_start + h_crop,
+                                                                                            w_start:w_start + w_crop]
+        img2_abs[h_start:h_start + h_crop, w_start:w_start + w_crop] = \
+            lam * img1_abs_[h_start:h_start + h_crop, w_start:w_start + w_crop] + (1 - lam) * img2_abs_[
+                                                                                            h_start:h_start + h_crop,
+                                                                                            w_start:w_start + w_crop]
+
+        img1_abs = np.fft.ifftshift(img1_abs, axes=(0, 1))
+        img2_abs = np.fft.ifftshift(img2_abs, axes=(0, 1))
+
+        img21 = img1_abs * (np.e ** (1j * img1_pha))
+        img12 = img2_abs * (np.e ** (1j * img2_pha))
+        img21 = np.real(np.fft.ifft2(img21, axes=(0, 1)))
+        img12 = np.real(np.fft.ifft2(img12, axes=(0, 1)))
+        img21 = np.uint8(np.clip(img21, 0, 255))
+        img12 = np.uint8(np.clip(img12, 0, 255))
+
+        return img21, img12
+    
+    def _get_post_transform(self, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+        """ Get post image transformations. """
+        img_transform = T.Compose([
+            T.ToTensor(),
+            T.Normalize(mean, std)
+        ])
+        return img_transform
+
+    def __call__(self, img1, img2):
+        img1, img2 = self.pre_transform(img1), self.pre_transform(img2)
+        img21, img12 = self.colorful_spectrum_mix(img1, img2)
+        # img21, img12 = self.post_transform(img21), self.post_transform(img12)
+        return img21, img12
