@@ -162,6 +162,55 @@ def create_dataloader(path,
                   generator=generator), dataset
 
 
+def bbox_to_cells(label, img_size=640, grid_size=20, thresh=0.2):
+    """
+    Returns list of (row, col) grid cells where overlap > thresh.
+    """
+
+    # ---- parse label ----
+    lab, cx, cy, w, h = label  # adjust if format differs
+
+    # convert to pixel coords
+    cx *= img_size
+    cy *= img_size
+    w  *= img_size
+    h  *= img_size
+
+    x1 = cx - w / 2
+    y1 = cy - h / 2
+    x2 = cx + w / 2
+    y2 = cy + h / 2
+
+    cell_size = img_size // grid_size
+    cell_area = cell_size * cell_size
+    min_overlap = thresh * cell_area
+
+    cells = []
+
+    for r in range(grid_size):
+        for c in range(grid_size):
+
+            cx1 = c * cell_size
+            cy1 = r * cell_size
+            cx2 = cx1 + cell_size
+            cy2 = cy1 + cell_size
+
+            # intersection
+            ix1 = max(x1, cx1)
+            iy1 = max(y1, cy1)
+            ix2 = min(x2, cx2)
+            iy2 = min(y2, cy2)
+
+            iw = max(0, ix2 - ix1)
+            ih = max(0, iy2 - iy1)
+
+            inter_area = iw * ih
+
+            if inter_area > min_overlap:
+                cells.append((r, c, lab.item()))
+
+    return cells
+
 class InfiniteDataLoader(dataloader.DataLoader):
     """ Dataloader that reuses workers
 
@@ -436,9 +485,32 @@ class LoadStreams:
 
 def img2label_paths(img_paths):
     # Define label paths as a function of image paths
-    sa, sb = f'{os.sep}Images{os.sep}', f'{os.sep}Labels{os.sep}'  # /images/, /labels/ substrings
-    return [sb.join(x.rsplit(sa, 1)).rsplit('.', 1)[0] + '.txt' for x in img_paths]
+    label_paths = []
 
+    for x in img_paths:
+        x = str(x)
+
+        # replace both cases efficiently
+        x = x.replace("/Images/", "/Labels/").replace("\\Images\\", "\\Labels\\")
+        x = x.replace("/images/", "/labels/").replace("\\images\\", "\\labels\\")
+
+        label_paths.append(str(Path(x).with_suffix(".txt")))
+
+    return label_paths
+
+def img2mask_paths(img_paths):
+    # Define label paths as a function of image paths
+    label_paths = []
+
+    for x in img_paths:
+        x = str(x)
+
+        # replace both cases efficiently
+        x = x.replace("/Images/", "/Masks/").replace("\\Images\\", "\\Masks\\").replace("/home/muditha/malaria-project/MALMICCAI/","")
+
+        label_paths.append(str(Path(x).with_suffix(".npy")))
+
+    return label_paths
 
 class LoadImagesAndLabels(Dataset):
     # YOLOv5 train_loader/val_loader, loads images and labels for training and validation
@@ -502,6 +574,9 @@ class LoadImagesAndLabels(Dataset):
         self.label_files = img2label_paths(self.im_files)  # labels
         self.label_files_lcm = img2label_paths(self.im_files_lcm)  # labels
 
+        self.mask_files = img2mask_paths(self.im_files)
+        self.mask_files_lcm = img2mask_paths(self.im_files_lcm)
+        
         cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')
 
 
@@ -772,6 +847,26 @@ class LoadImagesAndLabels(Dataset):
 
     def __len__(self):
         return len(self.im_files)
+    
+    def get_masks(self, index, ratio, pad, h, w):
+
+        mal_labels = self.labels[index].copy()
+        if mal_labels.size:  # normalized xywh to pixel xyxy format
+                mal_labels[:, 1:] = xywhn2xyxy(mal_labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+        nl = len(mal_labels)  # number of mal_labels
+        if nl:
+            mal_labels[:, 1:5] = xyxy2xywhn(mal_labels[:, 1:5], w=640, h=640, clip=True, eps=1E-3)
+        mask_hcm = np.load(self.mask_files[index],allow_pickle=True)
+        mask_lcm = np.load(self.mask_files_lcm[index],allow_pickle=True)
+        for l in mal_labels:
+            patches = bbox_to_cells(
+                        l,
+                        grid_size=20,
+                        img_size=640
+                    )
+            for r,c,lab in patches:
+                mask_hcm[r][c] = int(lab+3)
+        return mask_hcm.astype(int), mask_lcm.astype(int)
 
 
     def __getitem__(self, index):
@@ -788,6 +883,8 @@ class LoadImagesAndLabels(Dataset):
         img_hcm, ratio_hcm, pad_hcm = letterbox(img_hcm, shape, auto=False, scaleup=False)
         img_lcm, ratio_lcm, pad_lcm = letterbox(img_lcm, shape, auto=False, scaleup=False)
 
+        mask_hcm, mask_lcm = self.get_masks(index, ratio_hcm, pad_hcm, h_hcm, w_hcm)
+        
         if self.dg_augment:
             img_hcm = self.dg_augmentations(img_hcm)
 
@@ -867,8 +964,7 @@ class LoadImagesAndLabels(Dataset):
         img_lcm = img_lcm.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         img_lcm = np.ascontiguousarray(img_lcm)
 
-
-        return (torch.from_numpy(img), torch.from_numpy(img_hcm), torch.from_numpy(img_lcm)), labels_out, (self.im_files[index], self.im_files_lcm[index]), shapes
+        return (torch.from_numpy(img), torch.from_numpy(img_hcm), torch.from_numpy(img_lcm)), labels_out, (self.im_files[index], self.im_files_lcm[index]), shapes, mask_hcm, mask_lcm
 
     def apply_clahe(self, img):
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -1067,12 +1163,14 @@ class LoadImagesAndLabels(Dataset):
 
     @staticmethod
     def collate_fn(batch):
-        ims, labels, paths, shapes = [], [], [], []
+        ims, labels, paths, shapes, mh, ml = [], [], [], [], [], []
         for b in batch:
             ims.append(b[0])
             labels.append(b[1])
             paths.append((b[2][0], b[2][1]))
             shapes.append(b[3])
+            mh.append(b[4])
+            ml.append(b[5])
 
         # Stack and concatenate the appropriate elements
         ims = tuple(zip(*ims))
@@ -1080,11 +1178,13 @@ class LoadImagesAndLabels(Dataset):
         labels = [torch.tensor(label) for label in labels]
         paths = tuple(zip(*paths))
         shapes = tuple(shapes)
+        mh = [torch.tensor(mhi).unsqueeze(0) for mhi in mh]
+        ml = [torch.tensor(mli).unsqueeze(0) for mli in ml]
 
         for i, lb in enumerate(labels):
             lb[:, 0] = i  # add target image index for build_targets()
 
-        return ims_stacked, torch.cat(labels, 0), paths, shapes
+        return ims_stacked, torch.cat(labels, 0), paths, shapes ,torch.cat(mh, 0),torch.cat(ml, 0)
 
 
     @staticmethod

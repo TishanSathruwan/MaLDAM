@@ -5,7 +5,7 @@ test: 'LCM/test/1000x'
 
 # benchmarking
 benchmark:
-  BBBC041: 'BBBC041_6_class/test'
+  BBBC041: 'BBBC041/test'
   IML: 'iml-malaria'
 
 # class names

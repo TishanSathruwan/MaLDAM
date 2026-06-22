@@ -340,7 +340,6 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
 
         mloss = torch.zeros(3, device=device)  # mean losses
         mdac_loss = 0.0
-        mdalc_loss = 0.0
         DAC_LEARNING_RATE_FAC = 1
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
@@ -349,9 +348,11 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
-        for i, (imgs1, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs1, targets, paths, _, mh, ml) in pbar:  # batch -------------------------------------------------------------
             
             imgs, imgs_hcm, imgs_lcm = [img for img in imgs1]
+            mh = mh.flatten(1)
+            ml = ml.flatten(1)
 
             callbacks.run('on_train_batch_start')
             ni = i + nb * epoch  # number integrated batches (since train start)
@@ -396,7 +397,13 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 pred_lcm_local = local_projection_head(pred_lcm.flatten(start_dim=2).permute(0, 2, 1))
                 pred_lcm = projection_head(pred_lcm)
 
-                m1,m2,_,_  = neirest_neighbores_on_l2(pred_hcm_local,pred_lcm_local,20)
+                ## Extracting FG mask
+                fg_mh = mh>0
+                fg_lh = ml>0
+                fg_mask = fg_mh.unsqueeze(2) & fg_lh.unsqueeze(1)
+                fg_mask = ~fg_mask
+
+                m1,m2,_,_  = neirest_neighbores_on_l2(pred_hcm_local,pred_lcm_local,20, fg_mask)
                 m1 = m1.flatten(end_dim=1)
                 m2 = m2.flatten(end_dim=1)
 
