@@ -53,11 +53,13 @@ def neirest_neighbores(input_maps, candidate_maps, distances, num_matches):
     return filtered_input_maps, filtered_candidate_maps, indices_selected, topk_indices_selected
 
 
-def neirest_neighbores_on_l2(input_maps, candidate_maps, num_matches):
+def neirest_neighbores_on_l2(input_maps, candidate_maps, num_matches, mask=None):
     """
     input_maps: (B, H * W, C)
     candidate_maps: (B, H * W, C)
     """
     distances = torch.cdist(input_maps, candidate_maps)
+    if mask is not None:
+        distances[mask] = 100
     return neirest_neighbores(input_maps, candidate_maps, distances, num_matches)
 
