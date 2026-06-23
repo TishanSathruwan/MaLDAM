@@ -792,8 +792,8 @@ class LoadImagesAndLabels(Dataset):
         if self.dg_augment:
             img_hcm = self.dg_augmentations(img_hcm)
 
-        if self.fourier_dg_augmentations:
-            img_hcm, img_lcm = self.fourier_dg_augmentations(img_hcm, img_lcm)
+        # if self.fourier_dg_augmentations:
+        #     img_hcm, img_lcm = self.fourier_dg_augmentations(img_hcm, img_lcm)
 
         if mosaic:
             # Load mosaic
