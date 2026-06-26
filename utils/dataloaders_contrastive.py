@@ -900,6 +900,9 @@ class LoadImagesAndLabels(Dataset):
             # MixUp augmentation
             if random.random() < hyp['mixup']:
                 img, labels = mixup(img, labels, *self.load_mosaic(random.randint(0, self.n - 1)))
+            
+            if self.dg_augment:
+                img = self.dg_augmentations(img)
 
         else:
             # Load image
