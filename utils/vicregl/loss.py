@@ -22,7 +22,7 @@ class VICRegLLoss(nn.Module):
         var_coeff=25.0,
         embedding_dim=128,
         l2_all_matches=False,
-        num_matches=[200, 40],
+        num_matches=[20, 20],
         fast_vc_reg=False,
         alpha=0.75,
         ):
@@ -70,6 +70,7 @@ class VICRegLLoss(nn.Module):
     
     def _local_loss(
         self, maps_1, maps_2,
+        mask=None,
     ):
         inv_loss = 0.0
         var_loss = 0.0
@@ -82,10 +83,10 @@ class VICRegLLoss(nn.Module):
             num_matches_on_l2 = self.num_matches
 
         maps_1_filtered, maps_1_nn = neirest_neighbores_on_l2(
-            maps_1, maps_2, num_matches=num_matches_on_l2[0]
+            maps_1, maps_2, num_matches=num_matches_on_l2[0], mask=mask
         )
         maps_2_filtered, maps_2_nn = neirest_neighbores_on_l2(
-            maps_2, maps_1, num_matches=num_matches_on_l2[1]
+            maps_2, maps_1, num_matches=num_matches_on_l2[1], mask=mask
         )
 
         if self.fast_vc_reg:
@@ -101,7 +102,7 @@ class VICRegLLoss(nn.Module):
 
         return inv_loss, var_loss, cov_loss
     
-    def local_loss(self, maps_embedding):
+    def local_loss(self, maps_embedding, mask=None):
         num_views = len(maps_embedding)
         inv_loss = 0.0
         var_loss = 0.0
@@ -110,7 +111,7 @@ class VICRegLLoss(nn.Module):
         for i in range(2):
             for j in np.delete(np.arange(np.sum(num_views)), i):
                 inv_loss_this, var_loss_this, cov_loss_this = self._local_loss(
-                    maps_embedding[i], maps_embedding[j]
+                    maps_embedding[i], maps_embedding[j], mask=mask
                 )
                 inv_loss = inv_loss + inv_loss_this
                 var_loss = var_loss + var_loss_this
@@ -194,7 +195,7 @@ class VICRegLLoss(nn.Module):
 
         return dict(stdr=stdrepr, corr=corr)
     
-    def forward(self, outputs):
+    def forward(self, outputs, mask=None):
         """ forward pass """
         
         # Initiate parameters
@@ -221,7 +222,7 @@ class VICRegLLoss(nn.Module):
                 maps_var_loss,
                 maps_cov_loss,
             ) = self.local_loss(
-                outputs["maps_embedding"]
+                outputs["maps_embedding"], mask=mask
             )
             loss = loss + (1 - self.alpha) * (
                 maps_inv_loss + maps_var_loss + maps_cov_loss

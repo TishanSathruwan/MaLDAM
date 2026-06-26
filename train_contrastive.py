@@ -402,7 +402,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
                 # dac_loss = dac_criterion(vicregl_outs["embedding"][0],vicregl_outs["embedding"][1])*DAC_LEARNING_RATE_FAC
 
                 # vicregL based loss
-                vicregl_loss, _ = vicregl_criterion(vicregl_outs)
+                vicregl_loss, _ = vicregl_criterion(vicregl_outs, fg_mask)
                 vicregl_loss = vicregl_loss * 0.05 
 
 
