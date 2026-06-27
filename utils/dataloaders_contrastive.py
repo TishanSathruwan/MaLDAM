@@ -1006,7 +1006,10 @@ class LoadImagesAndLabels(Dataset):
         im, f, fn = self.ims_lcm[i], self.im_files_lcm[i], self.npy_files_lcm[i],
         if im is None:  # not cached in RAM
             if fn.exists():  # load npy
-                im = np.load(fn)
+                try:
+                    im = np.load(fn)
+                except:
+                    im = cv2.imread(f)  # BGR
             else:  # read image
                 im = cv2.imread(f)  # BGR
                 assert im is not None, f'Image Not Found {f}'
