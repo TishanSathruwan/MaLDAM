@@ -717,7 +717,7 @@ class MalariaDGAugment:
         # img = self.lens_distortion(img)
         # img = self.vignetting(img)
 
-        img = self.resolution_degradation(img)
+        # img = self.resolution_degradation(img)
 
         return img
 
