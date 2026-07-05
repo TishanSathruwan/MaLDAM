@@ -72,6 +72,7 @@ LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable
 RANK = int(os.getenv('RANK', -1))
 WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))
 # GIT_INFO = check_git_info()
+ALPHA = 0.80
 
 class ProjectionHead(nn.Module):
     def __init__(self, in_features = 768, hidden_features = 256, out_features = 128):
@@ -158,7 +159,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
         model = Model(cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     # projection_head = ProjectionHead().to(device) #Projection head is only for yolov5m only, run model/yolo.py and print the features output accordingly to put here
-    projection_head = VICRegLHead().to(device)
+    projection_head = VICRegLHead(alpha=ALPHA).to(device)
 
     amp = check_amp(model)  # check AMP
     # amp1 = check_amp(projection_head)  # check AMP
@@ -305,7 +306,7 @@ def train(hyp, opt, device, callbacks):  # hyp is path/to/hyp.yaml or hyp dictio
     scaler = torch.cuda.amp.GradScaler(enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model)  # init loss class
-    vicregl_criterion = VICRegLLoss()
+    vicregl_criterion = VICRegLLoss(alpha=ALPHA)
     callbacks.run('on_train_start')
     LOGGER.info(f'Image sizes {imgsz} train, {imgsz} val\n'
                 f'Using {train_loader.num_workers * WORLD_SIZE} dataloader workers\n'
