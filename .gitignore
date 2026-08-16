@@ -162,6 +162,7 @@ cython_debug/
 datasets/
 runs/
 results/
+wandb/
 
 # Weights
 yolov5m.pt

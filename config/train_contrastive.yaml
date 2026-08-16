@@ -1,0 +1,85 @@
+name: exp                # run name -> <out_dir>/<name>
+out_dir: runs/train
+exist_ok: false           # if true, reuse <out_dir>/<name> instead of incrementing it
+device: "0"               # cuda device(s), e.g. "0", "0,1,2,3", or "cpu"; --device CLI flag overrides
+parallel: false           # set true when launching via torchrun for DDP
+seed: 0
+resume: false             # false | true (resume the most recent run) | path to a last*.pt checkpoint
+
+data:
+  config: data/m5_400x.yaml   # YOLOv5-style dataset yaml (train/val/benchmark paths + class names)
+  cache: null                  # null | ram | disk | val
+  single_cls: false
+  rect: false
+  workers: 8
+
+model:
+  weights: yolov5m.pt
+  cfg: yolov5m.yaml
+  imgsz: 640
+  freeze: [0]                  # e.g. [10] to freeze the backbone, [0, 1, 2] for the first 3 layers
+  sync_bn: false
+
+vicregl:
+  alpha: 0.80                  # balance between global (VICReg) and local (VICRegL) objectives
+  maps_mlp: "256-128-256"
+  mlp: "256-128"
+  norm_layer: layer_norm
+  loss_weight: 0.05
+
+train:
+  epochs: 100
+  batch_size: 32                # -1 triggers AutoBatch (single-GPU only)
+  optimizer: SGD                 # SGD | Adam | AdamW
+  cos_lr: false
+  multi_scale: false
+  label_smoothing: 0.0
+  patience: 100                  # epochs of no mAP improvement before early stopping
+  save_period: -1                # save a checkpoint every N epochs (disabled if < 1)
+  quad: false
+  image_weights: false
+  nosave: false
+  noval: false
+  noautoanchor: false
+  noplots: false
+
+hyp:
+  lr0: 0.01
+  lrf: 0.01
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3.0
+  warmup_momentum: 0.8
+  warmup_bias_lr: 0.1
+  box: 0.05
+  cls: 0.5
+  cls_pw: 1
+  obj: 1
+  obj_pw: 1
+  iou_t: 0.2
+  anchor_t: 4.0
+  fl_gamma: 0.0
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+  degrees: 0
+  translate: 0.1
+  scale: 0
+  shear: 0
+  perspective: 0
+  flipud: 0.5
+  fliplr: 0.5
+  mosaic: 0.5
+  mixup: 0.5
+  copy_paste: 0
+
+evolve:
+  enabled: false             # hyperparameter evolution mode (mutates hyp across generations)
+  generations: 300
+  bucket: ""                  # gsutil bucket to sync evolve.csv, empty to disable
+
+wandb:
+  entity: null
+  upload_dataset: false
+  bbox_interval: -1
+  artifact_alias: latest
