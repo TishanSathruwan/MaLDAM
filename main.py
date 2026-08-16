@@ -3,7 +3,6 @@ Copyright 2026 MaLDAM Authors. All Rights Reserved.
 
 MaLDAM: Masked Localized Domain Adaptation for Malaria Detection in Low-Cost Microscopic Images.
 Authors: Muditha Fernando, Tishan Rathnasekara, Saeedha Nazar, Avishka Perera, Tharindu Kaluarachchi
-Publication: HemaRAI 2026 (Oral) | CC BY 4.0
 File: Main training pipeline for VICRegL contrastive pretraining of YOLOv5.
 """
 
@@ -35,7 +34,7 @@ from src.utils.metrics import fitness
 from src.utils.plots import plot_evolve
 from src.utils.torch_utils import select_device
 
-# Hyperparameter evolution metadata (mutation scale 0-1, lower_limit, upper_limit)
+# Hyperparameter evolution metadata
 EVOLVE_META = {
     "lr0": (1, 1e-5, 1e-1),
     "lrf": (1, 0.01, 1.0),
@@ -69,7 +68,7 @@ EVOLVE_META = {
 
 
 def _resolve_resume(cfg):
-    """If resuming, adopt the previous run's own saved config (matches YOLOv5's resume semantics)."""
+    """Adopt the previous run's own saved config."""
     if not cfg.resume or cfg.evolve.enabled:
         return cfg
 
@@ -88,7 +87,7 @@ def _resolve_resume(cfg):
 
 
 def run_evolve(cfg, device):
-    """Hyperparameter evolution: mutate cfg.hyp across generations, each a full training run from scratch."""
+    """Hyperparameter evolution, each a full training run from scratch."""
     hyp = dict(cfg.hyp)
     project = "runs/evolve" if cfg.out_dir == "runs/train" else cfg.out_dir
     save_dir = Path(project) / cfg.name
@@ -155,6 +154,7 @@ def run_evolve(cfg, device):
 
 
 def main(cfg):
+    """ Main entry point for training."""
     if RANK in (-1, 0):
         print_args(OmegaConf.to_container(cfg, resolve=True))
         check_git_status()
@@ -163,11 +163,6 @@ def main(cfg):
     assert len(cfg.model.cfg) or len(cfg.model.weights), "either model.cfg or model.weights must be specified"
 
     cfg = _resolve_resume(cfg)
-
-    # In DDP, CUDA_VISIBLE_DEVICES is set by the launcher (e.g. `CUDA_VISIBLE_DEVICES=0,1 torchrun ...`)
-    # and each rank picks its GPU via LOCAL_RANK below. Passing cfg.device (typically a single id
-    # meant for single-GPU runs) into select_device would overwrite CUDA_VISIBLE_DEVICES down to
-    # one GPU for every rank, so skip that override here.
     device = select_device('' if LOCAL_RANK != -1 else str(cfg.device), batch_size=cfg.train.batch_size)
     if LOCAL_RANK != -1:
         msg = "is not compatible with YOLOv5 Multi-GPU DDP training"
@@ -188,7 +183,7 @@ def main(cfg):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="VICRegL Contrastive Pretraining for YOLOv5")
+    parser = argparse.ArgumentParser(description="MaLDAM Training")
     parser.add_argument(
         "--config_path",
         type=str,
@@ -210,7 +205,6 @@ if __name__ == "__main__":
 
     main(CFG)
     
-
 # How to train;
 # Usage - Single-GPU training:
 #     $ python main.py --config_path config/train_contrastive.yaml
