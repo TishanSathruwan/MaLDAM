@@ -163,7 +163,11 @@ runs/train/<name>/
                                 # written once at the end of training (see Cross-Dataset Benchmarks)
 ```
 
-## Citation
+## TODO
+
+- Add Cellpose-SAM based segmentation mask generation script.
+
+<!-- ## Citation
 
 If you use this repository, please cite MaLDAM alongside the two works it builds on:
 
@@ -174,7 +178,7 @@ If you use this repository, please cite MaLDAM alongside the two works it builds
   booktitle = {HemaRAI},
   year      = {2026}
 }
-```
+``` -->
 
 ## Acknowledgements
 
